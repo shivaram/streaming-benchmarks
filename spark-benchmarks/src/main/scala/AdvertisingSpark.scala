@@ -15,6 +15,7 @@ import org.apache.spark.streaming.{Milliseconds, StreamingContext}
 
 import org.apache.spark.streaming.kafka.KafkaUtils
 import org.apache.spark.streaming.dstream
+import org.apache.spark.streaming.Time
 import org.apache.spark.SparkConf
 import org.json.JSONObject
 import org.sedis._
@@ -35,6 +36,12 @@ object KafkaRedisAdvertisingStream {
       case n: Number => n.longValue()
       case other => throw new ClassCastException(other + " not a Number")
     }
+    val batchNumJobs = commonConfig.get("spark.jobsperbatch") match {
+      case n: Number => n.longValue()
+      case other =>
+        System.err.println("Using 1 job per batch")
+        1
+    }
     val topic = commonConfig.get("kafka.topic") match {
       case s: String => s
       case other => throw new ClassCastException(other + " not a String")
@@ -44,10 +51,10 @@ object KafkaRedisAdvertisingStream {
       case s: String => s
       case other => throw new ClassCastException(other + " not a String")
     }
-    
+
     // Create context with 2 second batch interval
     val sparkConf = new SparkConf().setAppName("KafkaRedisAdvertisingStream")
-    val ssc = new StreamingContext(sparkConf, Milliseconds(batchSize))
+    val ssc = new StreamingContext(sparkConf, Milliseconds(batchSize), batchNumJobs.toInt)
 
     val kafkaHosts = commonConfig.get("kafka.brokers").asInstanceOf[java.util.List[String]] match {
       case l: java.util.List[String] => l.asScala.toSeq
@@ -61,9 +68,10 @@ object KafkaRedisAdvertisingStream {
     // Create direct kafka stream with brokers and topics
     val topicsSet = Set(topic)
     val brokers = joinHosts(kafkaHosts, kafkaPort)
-    val kafkaParams = Map[String, String]("metadata.broker.list" -> brokers, "auto.offset.reset" -> "smallest")
+    //val kafkaParams = Map[String, String]("metadata.broker.list" -> brokers, "auto.offset.reset" -> "smallest")
+    val kafkaParams = Map[String, String]("metadata.broker.list" -> brokers)
     System.err.println(
-      "Trying to connect to Kafka at " + brokers)
+      "Trying to connect to Kafka at " + brokers + " for topic " + topic)
     val messages = KafkaUtils.createDirectStream[String, String, StringDecoder, StringDecoder](
       ssc, kafkaParams, topicsSet)
 
@@ -104,7 +112,25 @@ object KafkaRedisAdvertisingStream {
     //    val totalEventsPerCampaignTime_repartitioned = totalEventsPerCampaignTime.repartition(20)
 
     val final_results = totalEventsPerCampaignTime.mapPartitions(writeRedisTopLevel(_, redisHost), false)
-    val counts = final_results.count().print()
+    //val final_results = totalEventsPerCampaignTime.mapPartitions(computeTimeDiff(_), false)
+
+    final_results.foreachRDDPartition(
+      (it: Iterator[Long]) => {
+        if (it.hasNext) {
+          val arr = it.toArray
+          (arr.max, arr.length)
+        } else {
+          (0L, 0)
+        }
+      },
+      (in: Array[(Long, Int)], t: Time) => {
+        val timeDiffs = in.map(_._1)
+        val lengths = in.map(_._2)
+        println("----------- Time " + t + " ----------------")
+        println("Max Time diffs: " + timeDiffs.mkString(","))
+        println("Counts " + lengths.mkString(","))
+      },
+      false)
 
     // Start the computation
     ssc.start
@@ -113,13 +139,14 @@ object KafkaRedisAdvertisingStream {
 
   def joinHosts(hosts: Seq[String], port: String): String = {
     val joined = new StringBuilder();
-    hosts.foreach({
-      if (!joined.isEmpty) {
-        joined.append(",");
+    var i = 0
+    hosts.foreach { host =>
+      if (i != 0) {
+        joined.append(",")
       }
-
-      joined.append(_).append(":").append(port);
-    })
+      i = i + 1
+      joined.append(host).append(":").append(port)
+    }
     return joined.toString();
   }
 
@@ -142,17 +169,17 @@ object KafkaRedisAdvertisingStream {
   }
 
   def queryRedisTopLevel(eventsIterator: Iterator[Array[String]], redisHost: String): Iterator[Array[String]] = {
-    val pool = new Pool(new JedisPool(new JedisPoolConfig(), redisHost, 6379, 2000))
+    val pool = JedisPoolCache.getPool(redisHost) // new Pool(new JedisPool(new JedisPoolConfig(), redisHost, 6379, 2000))
     var ad_to_campaign = new util.HashMap[String, String]();
     val eventsIteratorMap = eventsIterator.map(event => queryRedis(pool, ad_to_campaign, event))
-    pool.underlying.getResource.close
+    // pool.underlying.getResource.close
     return eventsIteratorMap
   }
 
   def queryRedis(pool: Pool, ad_to_campaign: util.HashMap[String, String], event: Array[String]): Array[String] = {
     val ad_id = event(0)
     val campaign_id_cache = ad_to_campaign.get(ad_id)
-    if (campaign_id_cache==null) {
+    if (campaign_id_cache == null) {
       pool.withJedisClient { client =>
         val campaign_id_temp = Dress.up(client).get(ad_id)
         if (campaign_id_temp != None) {
@@ -175,19 +202,32 @@ object KafkaRedisAdvertisingStream {
     //Key: (campaign_id, window_time),  Value: ad_id
   }
 
-  def writeRedisTopLevel(campaign_window_counts_Iterator: Iterator[((String, Long), Int)], redisHost: String): Iterator[String] = {
-    val pool = new Pool(new JedisPool(new JedisPoolConfig(), redisHost, 6379, 2000))
-
+  def computeTimeDiff(itr: Iterator[((String, Long), Int)]): Iterator[Long] = {
     val campaign_window_counts_IteratorMap =
-      campaign_window_counts_Iterator.map(campaign_window_counts => writeWindow(pool, campaign_window_counts))
-    pool.underlying.getResource.close
+      itr.map { campaign_window_counts =>
+        val campaign_window_pair = campaign_window_counts._1
+        val campaign = campaign_window_pair._1
+        val window_timestamp_long = campaign_window_pair._2
+        val curT = currentTime
+        curT - window_timestamp_long
+      }
     return campaign_window_counts_IteratorMap
   }
 
-  private def writeWindow(pool: Pool, campaign_window_counts: ((String, Long), Int)) : String = {
+  def writeRedisTopLevel(campaign_window_counts_Iterator: Iterator[((String, Long), Int)], redisHost: String): Iterator[Long] = {
+    val pool = JedisPoolCache.getPool(redisHost) // new Pool(new JedisPool(new JedisPoolConfig(), redisHost, 6379, 2000))
+
+    val campaign_window_counts_IteratorMap =
+      campaign_window_counts_Iterator.map(campaign_window_counts => writeWindow(pool, campaign_window_counts))
+    // pool.underlying.getResource.close
+    return campaign_window_counts_IteratorMap
+  }
+
+  private def writeWindow(pool: Pool, campaign_window_counts: ((String, Long), Int)) : Long = {
     val campaign_window_pair = campaign_window_counts._1
     val campaign = campaign_window_pair._1
-    val window_timestamp = campaign_window_pair._2.toString
+    val window_timestamp_long = campaign_window_pair._2
+    val window_timestamp = window_timestamp_long.toString
     val window_seenCount = campaign_window_counts._2
     pool.withJedisClient { client =>
 
@@ -204,9 +244,29 @@ object KafkaRedisAdvertisingStream {
         dressUp.lpush(windowListUUID, window_timestamp)
       }
       dressUp.hincrBy(windowUUID, "seen_count", window_seenCount)
-      dressUp.hset(windowUUID, "time_updated", currentTime.toString)
-      return window_seenCount.toString
+      val curT = currentTime
+      dressUp.hset(windowUUID, "time_updated", curT.toString)
+      return (curT - window_timestamp_long)
     }
 
   }
+
+}
+
+object JedisPoolCache {
+
+  val pools = new java.util.HashMap[String, Pool]
+  val port = 6379
+  val timeout = 2000
+
+  def getPool(redisHost: String): Pool = {
+    // TODO(shivaram): get rid of this lock ?
+    pools.synchronized {
+      if (pools.get(redisHost) == null) {
+        pools.put(redisHost, new Pool(new JedisPool(new JedisPoolConfig(), redisHost, port, timeout)))
+      }
+    }
+    pools.get(redisHost)
+  }
+
 }
