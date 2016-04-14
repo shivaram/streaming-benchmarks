@@ -2,16 +2,30 @@
 # Licensed under the terms of the Apache License 2.0. Please see LICENSE file in the project root for terms.
 
 kafka.brokers:
-    - "localhost"
+    - "ec2-54-184-95-45.us-west-2.compute.amazonaws.com"
+    - "ec2-54-189-144-164.us-west-2.compute.amazonaws.com"
+    - "ec2-54-188-14-199.us-west-2.compute.amazonaws.com"
+    - "ec2-54-185-16-41.us-west-2.compute.amazonaws.com"
+    - "ec2-52-13-9-232.us-west-2.compute.amazonaws.com"
+    - "ec2-50-112-61-216.us-west-2.compute.amazonaws.com"
+    - "ec2-54-185-18-117.us-west-2.compute.amazonaws.com"
+    - "ec2-54-189-183-78.us-west-2.compute.amazonaws.com"
 
 zookeeper.servers:
-    - "localhost"
+    - "ec2-54-184-95-45.us-west-2.compute.amazonaws.com"
+    - "ec2-54-189-144-164.us-west-2.compute.amazonaws.com"
+    - "ec2-54-188-14-199.us-west-2.compute.amazonaws.com"
+    - "ec2-54-185-16-41.us-west-2.compute.amazonaws.com"
+    - "ec2-52-13-9-232.us-west-2.compute.amazonaws.com"
+    - "ec2-50-112-61-216.us-west-2.compute.amazonaws.com"
+    - "ec2-54-185-18-117.us-west-2.compute.amazonaws.com"
+    - "ec2-54-189-183-78.us-west-2.compute.amazonaws.com"
 
 kafka.port: 9092
 zookeeper.port: 2181
-redis.host: "localhost"
-kafka.topic: "ad-events"
-kafka.partitions: 1
+redis.host: "ec2-52-12-30-129.us-west-2.compute.amazonaws.com"
+kafka.topic: ad-events-908
+kafka.partitions: 8
 
 process.hosts: 1
 process.cores: 4
@@ -21,4 +35,5 @@ storm.workers: 1
 storm.ackers: 2
 
 #Spark Specific
-spark.batchtime: 2000
+spark.batchtime: 4000
+spark.jobsperbatch: 40
