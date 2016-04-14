@@ -6,6 +6,8 @@ set -o errtrace
 set -o nounset
 set -o errexit
 
+export LEIN_ROOT="true"
+
 LEIN=${LEIN:-lein}
 MVN=${MVN:-mvn}
 GIT=${GIT:-git}
@@ -17,7 +19,7 @@ SCALA_BIN_VERSION=${SCALA_BIN_VERSION:-"2.10"}
 SCALA_SUB_VERSION=${SCALA_SUB_VERSION:-"4"}
 STORM_VERSION=${STORM_VERSION:-"0.10.0"}
 FLINK_VERSION=${FLINK_VERSION:-"0.10.1"}
-SPARK_VERSION=${SPARK_VERSION:-"1.5.1"}
+SPARK_VERSION=${SPARK_VERSION:-"1.6.2-SNAPSHOT"}
 
 STORM_DIR="apache-storm-$STORM_VERSION"
 REDIS_DIR="redis-$REDIS_VERSION"
@@ -31,9 +33,9 @@ APACHE_MIRROR=$(curl 'https://www.apache.org/dyn/closer.cgi' |   grep -o '<stron
 ZK_HOST="localhost"
 ZK_PORT="2181"
 ZK_CONNECTIONS="$ZK_HOST:$ZK_PORT"
-TOPIC=${TOPIC:-"ad-events"}
-PARTITIONS=${PARTITIONS:-1}
-LOAD=${LOAD:-1000}
+TOPIC=${TOPIC:-"ad-events-8"}
+PARTITIONS=${PARTITIONS:-8}
+LOAD=${LOAD:-5000}
 CONF_FILE=./conf/localConf.yaml
 TEST_TIME=${TEST_TIME:-240}
 
@@ -114,7 +116,11 @@ create_kafka_topic() {
 
 run() {
   OPERATION=$1
-  if [ "SETUP" = "$OPERATION" ];
+  if [ "REBUILD" = "$OPERATION" ];
+  then
+    $MVN clean install package -Dspark.version="$SPARK_VERSION" -Dkafka.version="$KAFKA_VERSION" -Dflink.version="$FLINK_VERSION" -Dstorm.version="$STORM_VERSION" -Dscala.binary.version="$SCALA_BIN_VERSION" -Dscala.version="$SCALA_BIN_VERSION.$SCALA_SUB_VERSION"
+
+  elif [ "SETUP" = "$OPERATION" ];
   then
     $GIT clean -fd
 
@@ -217,7 +223,7 @@ run() {
   elif [ "START_LOAD" = "$OPERATION" ];
   then
     cd data
-    start_if_needed leiningen.core.main "Load Generation" 1 $LEIN run -r -t $LOAD --configPath ../$CONF_FILE
+    start_if_needed leiningen.core.main "Load Generation" 1 $LEIN run -r -t $LOAD --configPath ../conf/benchmarkConf.yaml
     cd ..
   elif [ "STOP_LOAD" = "$OPERATION" ];
   then
@@ -318,6 +324,7 @@ run() {
       echo
     fi
     echo "Supported Operations:"
+    echo "REBUILD: Rebuild streaming benchmarks project"
     echo "SETUP: download and setup dependencies for running a single node test"
     echo "START_ZK: run a single node ZooKeeper instance on local host in the background"
     echo "STOP_ZK: kill the ZooKeeper instance"
