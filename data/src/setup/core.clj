@@ -12,9 +12,10 @@
             [clj-yaml.core :as yaml])
   (:gen-class))
 
+; (def kafka-topic "ad-events-809")
 (def num-campaigns 100)
 (def view-capacity-per-window 10)
-(def kafka-event-count  (* 10 1000000)) ; N millions
+(def kafka-event-count  (* 1 1000000)) ; N millions
 (def time-divisor 10000)               ; 10 seconds
 
 (defn make-ids [n]
@@ -58,7 +59,7 @@
               (println (str "{ \""ad "\": \"" campaign "\"}"))
               (redis/set ad campaign))))))))
 
-(defn write-to-kafka [ads kafka-hosts]
+(defn write-to-kafka [ads kafka-hosts kafka-topic]
   ;; Put some crap in Kafka
   (println "Setting up kafka topic.")
   (with-open [p (producer {"bootstrap.servers" kafka-hosts}
@@ -95,7 +96,7 @@
                                   "\", \"event_time\": \"" (str (+ start-time (* n 10) skew late-by))
                                   "\", \"ip_address\": \"1.2.3.4\"}")]
                 (.write kafka-o (str json-str "\n"))
-                (send p (record "ad-events" (.getBytes json-str))))))))))))
+                (send p (record kafka-topic (.getBytes json-str))))))))))))
 
 ;; Returns a map campaign-id->(timestamp->count)
 (defn dostats []
@@ -180,7 +181,7 @@
          "\", \"event_time\": \"" (str time)
          "\", \"ip_address\": \"1.2.3.4\"}")))
 
-(defn run [throughput with-skew? kafka-hosts redis-host]
+(defn run [throughput with-skew? kafka-hosts redis-host kafka-topic]
   (println "Running, emitting" throughput "tuples per second.")
   (let [ads (gen-ads redis-host)
         page-ids (make-ids 100)
@@ -199,7 +200,7 @@
             (future
               (if (> cur (+ t 100))
                 (println "Falling behind by:" (- cur t) "ms"))))
-          (send p (record "ad-events"
+          (send p (record kafka-topic
                           (.getBytes (make-kafka-event-at t with-skew? ads user-ids page-ids)))))))))
 
 (defn do-new-setup [redis-host]
@@ -242,7 +243,7 @@
       (let [campaigns (make-ids num-campaigns)
             ads (into [] (make-ids (* num-campaigns 10)))]
         (write-to-redis campaigns ads (conf :redis-host))
-        (write-to-kafka ads (conf :kakfa-brokers))
+        (write-to-kafka ads (conf :kakfa-brokers) (conf :kafka-topic))
         (write-ids campaigns ads))
       (write-to-redis campaigns ads))))
 
@@ -250,10 +251,11 @@
   (let [conf (yaml/parse-string (slurp confPath))
         redis-host (get conf :redis.host)
         kafka-port (get conf :kafka.port)
+        kafka-topic (get conf :kafka.topic)
         kafka-hosts (clojure.string/join (interpose "," (for [broker (get conf :kafka.brokers)]
                                                           (str broker ":" kafka-port))))]
-    (println {:redis-host redis-host :kakfa-brokers kafka-hosts})
-    {:redis-host redis-host :kakfa-brokers kafka-hosts}))
+    (println {:redis-host redis-host :kakfa-brokers kafka-hosts :kafka-topic kafka-topic})
+    {:redis-host redis-host :kakfa-brokers kafka-hosts :kafka-topic kafka-topic}))
 
 (def cli-options
   [["-s" "--setup" "Set up for catchup-simulation-mode (or re-setup if the .txt files exist)"]
@@ -274,12 +276,13 @@
   (let [{:keys [options arguments errors summary]} (cli/parse-opts args cli-options)
         conf (get-conf (:configPath options))
         kafka-hosts (get conf :kakfa-brokers)
+        kafka-topic (get conf :kafka-topic)
         redis-host (get conf :redis-host)]
     (cond
       (and (:setup options) (:check options)) (println "Specify either --setup OR --check")
       (:setup options)                        (do-setup conf)
       (:check options)                        (check-correct redis-host)
       (:new options)                          (do-new-setup redis-host)
-      (:run options)                          (run (:throughput options) (:with-skew options) kafka-hosts redis-host)
+      (:run options)                          (run (:throughput options) (:with-skew options) kafka-hosts redis-host kafka-topic)
       (:get-stats options)                    (get-stats redis-host)
       :else                                   (println summary))))
