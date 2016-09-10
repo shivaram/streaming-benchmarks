@@ -32,7 +32,7 @@ public class EventGeneratorSource extends LoadGeneratorSource<String> {
    * Generate a single element
    */
   @Override
-  public String generateElement() {
+  public String generateElement(long sliceTs) {
     if (adsIdx == ads.size()) {
       adsIdx = 0;
     }
@@ -51,7 +51,7 @@ public class EventGeneratorSource extends LoadGeneratorSource<String> {
     sb.append("\",\"event_type\":\"");
     sb.append(eventTypes[eventsIdx++]);
     sb.append("\",\"event_time\":\"");
-    sb.append(System.currentTimeMillis());
+    sb.append(sliceTs);
     sb.append("\",\"ip_address\":\"1.2.3.4\"}");
 
     return sb.toString();
@@ -63,10 +63,10 @@ public class EventGeneratorSource extends LoadGeneratorSource<String> {
   private Map<String, List<String>> generateCampaigns() {
     int numCampaigns = 100;
     int numAdsPerCampaign = 10;
-    Map<String, List<String>> adsByCampaign = new LinkedHashMap<>();
+    Map<String, List<String>> adsByCampaign = new LinkedHashMap<String, List<String>>();
     for (int i = 0; i < numCampaigns; i++) {
       String campaign = UUID.randomUUID().toString();
-      ArrayList<String> ads = new ArrayList<>();
+      ArrayList<String> ads = new ArrayList<String>();
       adsByCampaign.put(campaign, ads);
       for (int j = 0; j < numAdsPerCampaign; j++) {
         ads.add(UUID.randomUUID().toString());
@@ -80,12 +80,13 @@ public class EventGeneratorSource extends LoadGeneratorSource<String> {
    */
   private List<String> flattenCampaigns() {
     // Flatten campaigns into simple list of ads
-    List<String> ads = new ArrayList<>();
+    List<String> ads = new ArrayList<String>();
     for (Map.Entry<String, List<String>> entry : campaigns.entrySet()) {
       for (String ad : entry.getValue()) {
         ads.add(ad);
       }
     }
+    Collections.shuffle(ads, new Random(42L));
     return ads;
   }
 }

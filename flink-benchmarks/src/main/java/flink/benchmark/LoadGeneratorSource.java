@@ -14,19 +14,21 @@ public abstract class LoadGeneratorSource<T> extends RichParallelSourceFunction<
   private final int loadTargetHz;
   private final int timeSliceLengthMs;
   private final long totalEventsToGenerate;
+  private long beginTs;
 
-  private long elementsGenerated;
+  private long elementsGenerated = 0;
 
   public LoadGeneratorSource(int loadTargetHz, int timeSliceLengthMs, long totalEventsToGenerate) {
     this.loadTargetHz = loadTargetHz;
     this.timeSliceLengthMs = timeSliceLengthMs;
     this.totalEventsToGenerate = totalEventsToGenerate;
+    this.beginTs = System.currentTimeMillis();
   }
 
   /**
    * Subclasses must override this to generate a data element
    */
-  public abstract T generateElement();
+  public abstract T generateElement(long sliceTs);
 
 
   /**
@@ -39,20 +41,33 @@ public abstract class LoadGeneratorSource<T> extends RichParallelSourceFunction<
     int elements = loadPerTimeslice();
     long totalElementsPerTask = 
       totalEventsToGenerate / getRuntimeContext().getNumberOfParallelSubtasks();
+    if (elementsGenerated == 0) {
+      System.out.println("OLD TS WAS " + beginTs + " NEW IS " + System.currentTimeMillis());
+      beginTs = System.currentTimeMillis();
+    }
 
     while (running && elementsGenerated < totalElementsPerTask) {
+      long emitStartTime = System.currentTimeMillis();
+      long sliceTs = beginTs + (timeSliceLengthMs * (elementsGenerated / elements));
       synchronized (checkpointLock) {
-				long emitStartTime = System.currentTimeMillis();
-				for (int i = 0; i < elements; i++) {
-					sourceContext.collect(generateElement());
-				}
-				// Sleep for the rest of timeslice if needed
-				long emitTime = System.currentTimeMillis() - emitStartTime;
-				if (emitTime < timeSliceLengthMs) {
-					Thread.sleep(timeSliceLengthMs - emitTime);
-				}
-				elementsGenerated += elements;
-			}
+        System.out.println("SLICE TS IS " + sliceTs +
+            " elementsRatio " + elementsGenerated/elements +
+            " CUR TS IS " + emitStartTime +
+            " diff " + (emitStartTime - sliceTs));
+        for (int i = 0; i < elements; i++) {
+          sourceContext.collect(generateElement(sliceTs));
+        }
+        elementsGenerated += elements;
+      }
+      // Sleep for the rest of timeslice if needed
+      // long emitTime = System.currentTimeMillis() - emitStartTime;
+      long emitEndTime = System.currentTimeMillis();
+      if (emitEndTime < (sliceTs + timeSliceLengthMs)) {
+        System.out.println("SLEEPING for " + (sliceTs + timeSliceLengthMs - emitEndTime));
+        Thread.sleep(sliceTs + timeSliceLengthMs - emitEndTime);
+      } else {
+        System.out.println("FALLING BEHIND by " + (emitEndTime - sliceTs - timeSliceLengthMs));
+      }
     }
     sourceContext.close();
   }

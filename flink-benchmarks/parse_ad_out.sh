@@ -17,10 +17,14 @@ do
   mkdir -p /tmp/$slave
 
   scp -r $slave:$PATH_TO_COPY /tmp/$slave/ 
+  scp -r $slave:"$PATH_TO_COPY.old" /tmp/$slave/ 
   pushd /tmp/$slave 
   for f in `ls /tmp/$slave`
   do
-    cat $f/* >> $COMBINED_OUT_FILE
+    for g in `ls $f`
+    do
+      cat $f/$g | awk -F',' '{if (NF==3) print $0}' >> $COMBINED_OUT_FILE
+    done
   done
   popd
 done

@@ -32,6 +32,7 @@ import org.apache.flink.streaming.api.windowing.triggers.TriggerResult;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer082;
 import org.apache.flink.streaming.util.serialization.SimpleStringSchema;
+import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,22 +55,41 @@ public class AdvertisingTopologyFlinkWindows {
 
   private static final Logger LOG = LoggerFactory.getLogger(AdvertisingTopologyFlinkWindows.class);
 
+  public static String generateString(int length) {
+      java.util.Random rng = new java.util.Random(42L);
+      char[] text = new char[length];
+      for (int i = 0; i < length; i++) {
+          text[i] = Character.forDigit(rng.nextInt(10), 10);
+      }
+      return new String(text);
+  }
+
+  private static final String RANDOM_STRING_SUFFIX = generateString(128);
+
   public static void main(final String[] args) throws Exception {
 
-		ParameterTool parameter = ParameterTool.fromArgs(args);
+    ParameterTool parameter = ParameterTool.fromArgs(args);
 
     StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
     env.getConfig().setGlobalJobParameters(parameter);
 
     env.setBufferTimeout(parameter.getLong("flinkBufferTimeout", 100));
-    env.enableCheckpointing(parameter.getLong("flinkCheckpointInterval", 1000));
+    long checkpointInterval = parameter.getLong("flinkCheckpointInterval", 1000);
+    if (checkpointInterval > 0) {
+      env.enableCheckpointing(checkpointInterval);
+    }
+
+    env.setRestartStrategy(RestartStrategies.fixedDelayRestart(
+      3, // number of restart attempts
+      org.apache.flink.api.common.time.Time.of(1, TimeUnit.SECONDS)
+    ));
 
     int loadTargetHz = parameter.getInt("loadTargetHz", 400000);
     int timeSliceLengthMs = parameter.getInt("loadTimeSliceLengthMs", 100);
     long configWindowSize = parameter.getLong("windowSize", 10000);
     String csvPath = parameter.get("outPath", "/tmp/out.csv");
-		// String redisHost = parameter.get("redisHost", "");
-		// boolean useRedis = redisHost != "";
+    // String redisHost = parameter.get("redisHost", "");
+    // boolean useRedis = redisHost != "";
     long totalNumElementsToGenerate = parameter.getLong("totalNumElems", 300L * loadTargetHz);
 
     // use event time
@@ -148,17 +168,19 @@ public class AdvertisingTopologyFlinkWindows {
           throw new IllegalStateException("Unexpected");
         }
         long eventTime = Long.parseLong(tuple.f1);
-        tuple.f1 = Long.toString(window.getEnd());
-        tuple.f2 = System.currentTimeMillis() - window.getStart();
-				// Tuple5<String, String, Long, Long, Long> tuple5 =
-				// 	new Tuple5<String, String, Long, Long, Long>(
-				// 			tuple.f0,
-				// 			Long.toString(window.getEnd()),
-				// 			System.currentTimeMillis(),
-				// 			window.getStart(),
-				// 			eventTime
-				// 	);
-        out.collect(tuple); // collect end time here
+        Tuple3<String, String, Long> tupleOut = new Tuple3<String, String, Long>(
+          tuple.f0 + "|" + RANDOM_STRING_SUFFIX,
+          Long.toString(window.getEnd()),
+          System.currentTimeMillis() - window.getStart());
+        // Tuple5<String, String, Long, Long, Long> tuple5 =
+        //  new Tuple5<String, String, Long, Long, Long>(
+        //      tuple.f0,
+        //      Long.toString(window.getEnd()),
+        //      System.currentTimeMillis(),
+        //      window.getStart(),
+        //      eventTime
+        //  );
+        out.collect(tupleOut); // collect end time here
       }
     };
   }
@@ -211,7 +233,7 @@ public class AdvertisingTopologyFlinkWindows {
       JSONObject obj = (JSONObject) parser.parse(input);
 
       Tuple7<String, String, String, String, String, String, String> tuple =
-        new Tuple7<>(
+        new Tuple7<String, String, String, String, String, String, String>(
           obj.getAsString("user_id"),
           obj.getAsString("page_id"),
           obj.getAsString("ad_id"),
@@ -239,10 +261,10 @@ public class AdvertisingTopologyFlinkWindows {
    */
   private static final class JoinBolt extends RichFlatMapFunction<Tuple2<String, String>, Tuple2<String, String>> {
 
-		private Map<String, String> adsToCampaignsMap;
+    private Map<String, String> adsToCampaignsMap;
 
     public JoinBolt(Map<String, String> campaigns) {
-			this.adsToCampaignsMap = campaigns;
+      this.adsToCampaignsMap = campaigns;
     }
 
     @Override
@@ -253,7 +275,7 @@ public class AdvertisingTopologyFlinkWindows {
         return;
       }
 
-      Tuple2<String, String> tuple = new Tuple2<>(campaign_id, (String) input.getField(1)); // event_time
+      Tuple2<String, String> tuple = new Tuple2<String, String>(campaign_id, (String) input.getField(1)); // event_time
       out.collect(tuple);
     }
   }
@@ -291,7 +313,7 @@ public class AdvertisingTopologyFlinkWindows {
   private static class MapToImpressionCount implements MapFunction<Tuple2<String, String>, Tuple3<String, String, Long>> {
     @Override
     public Tuple3<String, String, Long> map(Tuple2<String, String> t3) throws Exception {
-      return new Tuple3<>(t3.f0, t3.f1, 1L);
+      return new Tuple3<String, String, Long>(t3.f0, t3.f1, 1L);
     }
   }
 
@@ -301,7 +323,7 @@ public class AdvertisingTopologyFlinkWindows {
   private static class RedisResultSink extends RichSinkFunction<Tuple3<String, String, Long>> {
     private Jedis flushJedis;
 
-		private String redisHost;
+    private String redisHost;
 
     public RedisResultSink(String redisHost) {
       this.redisHost = redisHost;
